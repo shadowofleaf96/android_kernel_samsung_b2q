@@ -1,0 +1,208 @@
+#!/bin/bash
+# Afaneh menu V2.0
+
+# Variables
+DIR=`readlink -f .`
+PARENT_DIR=`readlink -f ${DIR}/..`
+
+CHIPSET_NAME=lahaina
+export ARCH=arm64
+export PRODUCT_NAME=b2q
+export PROJECT_NAME=b2q
+export PLATFORM_VERSION=11
+export ANDROID_MAJOR_VERSION=r
+
+BUILD_CROSS_COMPILE=$PARENT_DIR/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+KERNEL_LLVM_BIN=$PARENT_DIR/llvm-arm-toolchain-ship-10.0/bin/clang
+CLANG_TRIPLE=aarch64-linux-gnu-
+KERNEL_MAKE_ENV=""
+
+DTS_DIR=$(pwd)/out/arch/$ARCH/boot/dts
+
+# Color
+ON_BLUE=`echo -e "\033[44m"`	# On Blue
+RED=`echo -e "\033[1;31m"`	# Red
+BLUE=`echo -e "\033[1;34m"`	# Blue
+GREEN=`echo -e "\033[1;32m"`	# Green
+Under_Line=`echo -e "\e[4m"`	# Text Under Line
+STD=`echo -e "\033[0m"`		# Text Clear
+ 
+# Functions
+pause(){
+  read -p "${RED}$2${STD}Press ${BLUE}[Enter]${STD} key to $1..." fackEnterKey
+}
+
+variant(){
+  findconfig=""
+  findconfig=($(ls arch/arm64/configs/vendor/shadow_* 2>/dev/null))
+  declare -i i=1
+  shift 2
+  for e in "${findconfig[@]}"; do
+    echo "$i) $(basename $e | cut -d'_' -f2)"
+    i=i+1
+  done
+  echo ""
+  read -p "Select variant: " REPLY
+  i="$REPLY"
+  if [[ $i -gt 0 && $i -le ${#findconfig[@]} ]]; then
+    export v="${findconfig[$i-1]}"
+    export VARIANT=$(basename $v | cut -d'_' -f2)
+    echo ${VARIANT} selected
+    pause 'continue'
+  else
+    pause 'return to Main menu' 'Invalid option, '
+    . $DIR/build_menu
+  fi
+}
+
+toolchain(){
+  if [ ! -d $PARENT_DIR/aarch64-linux-android-4.9 ]; then
+    pause 'clone Toolchain aarch64-linux-android-4.9 cross compiler'
+    git clone --branch android-9.0.0_r59 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 $PARENT_DIR/aarch64-linux-android-4.9
+    . $DIR/build_menu
+  fi
+}
+
+llvm(){
+  if [ ! -d $PARENT_DIR/llvm-arm-toolchain-ship-10.0 ]; then
+    pause 'clone Snapdragon LLVM ARM Compiler 10.0'
+    git clone https://github.com/proprietary-stuff/llvm-arm-toolchain-ship-10.0 $PARENT_DIR/llvm-arm-toolchain-ship-10.0
+    . $DIR/build_menu
+  fi
+}
+
+clean(){
+  echo "${GREEN}***** Cleaning in Progress *****${STD}"
+  make $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE clean
+  make $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE mrproper
+  [ -d "out" ] && rm -rf out
+  echo "${GREEN}***** Cleaning Done *****${STD}"
+  pause 'continue'
+ }
+
+build_kernel(){
+  variant
+  echo "${GREEN}***** Compiling kernel *****${STD}"
+  [ ! -d "out" ] && mkdir out
+  make -j$(nproc) -C $(pwd) O=$(pwd)/out $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE CONFIG_SECTION_MISMATCH_WARN_ONLY=y vendor/shadow_${VARIANT}_defconfig
+  make -j$(nproc) -C $(pwd) O=$(pwd)/out $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE CONFIG_SECTION_MISMATCH_WARN_ONLY=y
+
+  [ -e out/arch/arm64/boot/Image.gz ] && cp out/arch/arm64/boot/Image.gz $(pwd)/out/Image.gz
+  if [ -e out/arch/arm64/boot/Image ]; then
+    cp out/arch/arm64/boot/Image $(pwd)/out/Image
+
+    DTBO_FILES=$(find ${DTS_DIR}/samsung/ -name ${VARIANT}_*_w00_r*.dtbo)
+    cat ${DTS_DIR}/vendor/qcom/*.dtb > $(pwd)/out/dtb.img
+    $(pwd)/tools/mkdtimg create $(pwd)/out/dtbo.img --page_size=4096 ${DTBO_FILES}
+    echo "${GREEN}***** Ready to Roar *****${STD}"
+    pause 'continue'
+  else
+    pause 'return to Main menu' 'Kernel STUCK in BUILD!, '
+  fi
+}
+
+install-kernel-modules(){
+    [ -d "$2" ] && rm -rf $2
+    mkdir -p $2
+    sed -e 's/\(.*kernel.*\):/\/\1:/g' -e 's/ \([^ ]*kernel[^ ]*\)/ \/\1/g' $1/modules.dep > $2/modules.dep
+    cp $1/modules.softdep $2
+    cp $1/modules.alias $2
+    for MOD in $modules; do
+        MODULE="$(basename $MOD)"
+        sed -i "s|\(.*kernel.*\)\/$MODULE:|/lib/modules/$MODULE:|" $2/modules.dep
+        sed -i "s| \([^ ]*kernel.*\)\/$MODULE| /lib/modules/$MODULE|" $2/modules.dep
+        basename $MOD >> $2/modules.load;
+        cp $MOD $2
+    done
+}
+
+build_kernel_modules(){
+  if [ -e $DIR/out/arch/arm64/boot/Image ]; then
+    # Build modules
+    echo "${GREEN}***** Installing Kernel Modules *****${STD}"
+    [ ! -d "out/tmp_modules" ] && mkdir -p out/tmp_modules
+    make -j$(nproc) -C $(pwd) O=$(pwd)/out $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE CONFIG_SECTION_MISMATCH_WARN_ONLY=y modules
+    make -j$(nproc) -C $(pwd) O=$(pwd)/out $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE REAL_CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE CONFIG_SECTION_MISMATCH_WARN_ONLY=y INSTALL_MOD_STRIP=1 INSTALL_MOD_PATH=$(pwd)/out/tmp_modules modules_install
+
+    kernel_release=$(cat out/include/config/kernel.release)
+    kernel_modules_dir=$DIR/out/tmp_modules/lib/modules/$kernel_release
+    kernel_modules_out=$DIR/out/lib/modules
+    modules=$(find $kernel_modules_dir -type f -name '*.ko');
+
+    install-kernel-modules $kernel_modules_dir $kernel_modules_out
+    [ -d "out/tmp_modules" ] && rm -rf out/tmp_modules
+    echo "${GREEN}***** Ready to Roar *****${STD}"
+    pause 'continue'
+  else
+    pause 'return to Main menu' 'Build kernel first, '
+  fi
+}
+
+anykernel3(){
+  if [ ! -d $PARENT_DIR/AnyKernel3 ]; then
+    pause 'clone AnyKernel3 - Flashable Zip Template'
+    git clone https://github.com/osm0sis/AnyKernel3 $PARENT_DIR/AnyKernel3
+  fi
+  variant
+  [ -e $PARENT_DIR/${VARIANT}_kernel.zip ] && rm $PARENT_DIR/Shadow_Kernel_${VARIANT}.zip
+  if [ -e $DIR/out/arch/arm64/boot/Image.gz ]; then
+    cd $PARENT_DIR/AnyKernel3
+    git reset --hard
+    cp $DIR/out/arch/arm64/boot/Image.gz zImage
+    sed -i "s/ExampleKernel by osm0sis/Shadow Kernel for ${VARIANT} by ShadowOfLeaf/g" anykernel.sh
+    sed -i "s/=maguro/=${VARIANT}/g" anykernel.sh
+    sed -i "s/=toroplus/=/g" anykernel.sh
+    sed -i "s/=toro/=/g" anykernel.sh
+    sed -i "s/=tuna/=/g" anykernel.sh
+    sed -i "s/omap\/omap_hsmmc\.0\/by-name\/boot/soc\/1d84000\.ufshc\/by-name\/boot/g" anykernel.sh
+    sed -i "s/backup_file/#backup_file/g" anykernel.sh
+    sed -i "s/replace_string/#replace_string/g" anykernel.sh
+    sed -i "s/insert_line/#insert_line/g" anykernel.sh
+    sed -i "s/append_file/#append_file/g" anykernel.sh
+    sed -i "s/patch_fstab/#patch_fstab/g" anykernel.sh
+    zip -r9 $PARENT_DIR/Shadow_Kernel_${VARIANT}.zip * -x .git README.md *placeholder
+    cd $DIR
+    pause 'continue'
+  else
+    pause 'return to Main menu' 'Build kernel first, '
+  fi
+}
+
+# Run once
+toolchain
+llvm
+
+# Show menu
+show_menus(){
+  clear
+  echo "${ON_BLUE} B U I L D - M E N U ${STD}"
+  echo "1. ${Under_Line}B${STD}uild kernel"
+  echo "2. Build kernel ${Under_Line}m${STD}odules"
+  echo "3. ${Under_Line}C${STD}lean"
+  echo "4. Make ${Under_Line}f${STD}lashable zip"
+  echo "5. E${Under_Line}x${STD}it"
+}
+
+# Read input
+read_options(){
+  local choice
+  read -p "Enter choice [ 1 - 5] " choice
+  case $choice in
+    1|b|B) build_kernel ;;
+    2|m|M) build_kernel_modules ;;
+    3|c|C) clean ;;
+    4|f|F) anykernel3;;
+    5|x|X) exit 0;;
+    *) pause 'return to Main menu' 'Invalid option, '
+  esac
+}
+
+# Trap CTRL+C, CTRL+Z and quit singles
+trap '' SIGINT SIGQUIT SIGTSTP
+ 
+# Step # Main logic - infinite loop
+while true
+do
+  show_menus
+  read_options
+done

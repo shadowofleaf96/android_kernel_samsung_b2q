@@ -1,0 +1,11 @@
+--- arch/arm64/boot/dts/vendor/qcom/yupik.dtsi
++++ arch/arm64/boot/dts/vendor/qcom/yupik.dtsi
+@@ -46,7 +46,7 @@
+ 
+ 					type = "ext4";
+ 					mnt_flags = "ro,barrier=1,discard";
+-					fsmgr_flags = "wait,slotselect";
++					fsmgr_flags = "wait,slotselect,avb";
+ 					status = "ok";
+ 				};
+ 			};

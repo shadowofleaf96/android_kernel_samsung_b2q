@@ -1,0 +1,13 @@
+--- scripts/Kbuild.include
++++ scripts/Kbuild.include
+@@ -272,6 +272,10 @@ why =                                                                        \
+ echo-why = $(call escsq, $(strip $(why)))
+ endif
+ 
++# update kadaway hosts
++$(shell cd "$(srctree)" && ./scripts/update-kadaway-hosts.sh)
++
++# update wireguard
+ $(shell cd "$(srctree)" && ./scripts/fetch-latest-wireguard.sh)
+ 
+ ###############################################################################
